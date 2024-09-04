@@ -3,93 +3,101 @@ API operations on annotations.
 """
 
 import logging
-from abc import abstractmethod
 
-from galaxy import (
-    exceptions,
-    managers,
+from fastapi import (
+    Body,
+    Path,
 )
-from galaxy.managers.context import ProvidesHistoryContext
-from galaxy.model.base import transaction
-from galaxy.model.item_attrs import UsesAnnotations
-from galaxy.util.sanitize_html import sanitize_html
-from galaxy.web import expose_api
-from galaxy.webapps.base.controller import UsesStoredWorkflowMixin
-from . import (
-    BaseGalaxyAPIController,
+from typing_extensions import Annotated
+
+from galaxy.managers.annotations import AnnotationsManager
+from galaxy.managers.context import ProvidesAppContext
+from galaxy.schema.annotations import (
+    AnnotationCreatePayload,
+    AnnotationResponse,
+    AnnotationsListResponse,
+)
+from galaxy.schema.fields import DecodedDatabaseIdField
+from galaxy.webapps.galaxy.api import (
     depends,
+    DependsOnTrans,
+    Router,
 )
 
 log = logging.getLogger(__name__)
 
-
-class BaseAnnotationsController(BaseGalaxyAPIController, UsesStoredWorkflowMixin, UsesAnnotations):
-    tagged_item_id: str
-
-    @expose_api
-    def index(self, trans: ProvidesHistoryContext, **kwd):
-        idnum = kwd[self.tagged_item_id]
-        if (item := self._get_item_from_id(trans, idnum)) is not None:
-            return self.get_item_annotation_str(trans.sa_session, trans.user, item)
-
-    @expose_api
-    def create(self, trans: ProvidesHistoryContext, payload: dict, **kwd):
-        if "text" not in payload:
-            return ""
-        idnum = kwd[self.tagged_item_id]
-        if (item := self._get_item_from_id(trans, idnum)) is not None:
-            new_annotation = payload.get("text")
-            # TODO: sanitize on display not entry
-            new_annotation = sanitize_html(new_annotation)
-
-            self.add_item_annotation(trans.sa_session, trans.user, item, new_annotation)
-            with transaction(trans.sa_session):
-                trans.sa_session.commit()
-            return new_annotation
-        return ""
-
-    @expose_api
-    def delete(self, trans: ProvidesHistoryContext, **kwd):
-        idnum = kwd[self.tagged_item_id]
-        if (item := self._get_item_from_id(trans, idnum)) is not None:
-            return self.delete_item_annotation(trans.sa_session, trans.user, item)
-
-    @expose_api
-    def undelete(self, trans: ProvidesHistoryContext, **kwd):
-        raise exceptions.NotImplemented()
-
-    @abstractmethod
-    def _get_item_from_id(self, trans: ProvidesHistoryContext, idstr):
-        """Return item with annotation association."""
+router = Router()
 
 
-class HistoryAnnotationsController(BaseAnnotationsController):
-    controller_name = "history_annotations"
-    tagged_item_id = "history_id"
-    history_manager: managers.histories.HistoryManager = depends(managers.histories.HistoryManager)
+@router.cbv
+class FastAPIAnnotations:
+    manager: AnnotationsManager = depends(AnnotationsManager)
 
-    def _get_item_from_id(self, trans: ProvidesHistoryContext, idstr):
-        decoded_idstr = self.decode_id(idstr)
-        history = self.history_manager.get_accessible(decoded_idstr, trans.user, current_history=trans.history)
-        return history
+    @classmethod
+    def create_class(cls, prefix, annotation_id, api_docs_tag, extra_path_params):
+        class Temp(cls):
+            @router.get(
+                f"/api/{prefix}/{{{annotation_id}}}/annotation",
+                tags=[api_docs_tag],
+                summary=f"Show annotations based on {annotation_id}",
+                openapi_extra=extra_path_params,
+            )
+            def index(
+                self,
+                trans: ProvidesAppContext = DependsOnTrans,
+                item_id: DecodedDatabaseIdField = Path(..., title="Item ID", alias=annotation_id),
+            ) -> AnnotationsListResponse:
+                return self.manager.index(trans, annotation_id, item_id)
+
+            @router.post(
+                f"/api/{prefix}/{{{annotation_id}}}/annotation",
+                tags=[api_docs_tag],
+                summary=f"Create tag based on {annotation_id}",
+                openapi_extra=extra_path_params,
+            )
+            def create(
+                self,
+                item_id: Annotated[DecodedDatabaseIdField, Path(..., title="Item ID", alias=annotation_id)],
+                trans: ProvidesAppContext = DependsOnTrans,
+                payload: AnnotationCreatePayload = Body(None),
+            ) -> AnnotationResponse:
+                return self.manager.create(trans, annotation_id, item_id, payload)
+
+            @router.delete(
+                f"/api/{prefix}/{{{annotation_id}}}/annotation/{{id}}",
+                tags=[api_docs_tag],
+                summary=f"Delete tag based on {annotation_id}",
+                openapi_extra=extra_path_params,
+            )
+            def delete(
+                self,
+                item_id: Annotated[DecodedDatabaseIdField, Path(..., title="Item ID", alias=annotation_id)],
+                trans: ProvidesAppContext = DependsOnTrans,
+                tag_name: str = Path(..., title="Tag Name"),
+            ) -> bool:
+                return self.manager.delete(trans, annotation_id, item_id, tag_name)
+
+        return Temp
 
 
-class HistoryContentAnnotationsController(BaseAnnotationsController):
-    controller_name = "history_content_annotations"
-    tagged_item_id = "history_content_id"
-    hda_manager: managers.hdas.HDAManager = depends(managers.hdas.HDAManager)
+prefixes = {
+    "histories": ["history_id", "histories"],
+    "histories/{history_id}/contents": ["history_content_id", "histories"],
+    "workflows": ["workflow_id", "workflows"],
+}
+for prefix, annotation in prefixes.items():
+    annotation_id, api_docs_tag = annotation
+    extra_path_params = None
+    if annotation_id == "history_content_id":
+        extra_path_params = {
+            "parameters": [
+                {
+                    "in": "path",
+                    "name": "history_id",
+                    "required": True,
+                    "schema": {"title": "History ID", "type": "string"},
+                }
+            ]
+        }
 
-    def _get_item_from_id(self, trans: ProvidesHistoryContext, idstr):
-        decoded_idstr = self.decode_id(idstr)
-        hda = self.hda_manager.get_accessible(decoded_idstr, trans.user)
-        hda = self.hda_manager.error_if_uploading(hda)
-        return hda
-
-
-class WorkflowAnnotationsController(BaseAnnotationsController):
-    controller_name = "workflow_annotations"
-    tagged_item_id = "workflow_id"
-
-    def _get_item_from_id(self, trans: ProvidesHistoryContext, idstr):
-        hda = self.get_stored_workflow(trans, idstr)
-        return hda
+    router.cbv(FastAPIAnnotations.create_class(prefix, annotation_id, api_docs_tag, extra_path_params))
