@@ -1,5 +1,7 @@
 import os
+import random
 import shutil
+import string
 import tempfile
 from tempfile import mkdtemp
 from typing import ClassVar
@@ -24,6 +26,7 @@ class ConfiguresRemoteFilesIntegrationTestCase(integration_util.IntegrationTestC
         cls.library_dir = os.path.join(root, "library")
         config["library_import_dir"] = cls.library_dir
         config["user_library_import_dir"] = cls.library_dir
+        config["admin_users"] = "test@galaxy.org"
 
     def setUp(self):
         super().setUp()
@@ -64,18 +67,19 @@ class TestLibraryDatasetsIntegration(ConfiguresRemoteFilesIntegrationTestCase):
         self._assert_status_code_is(userdir_file_response, 200)
 
     def test_admin_load_library_dataset(self):
-        importdir_folder_load_payload = {
-            "encoded_folder_id": self.library["root_folder_id"],
-            "source": "importdir_folder",
-            "path": self.admin_dir_to_import,
-        }
-        importdir_folder_response = self._post("libraries/datasets", data=importdir_folder_load_payload, admin=True)
-        self._assert_status_code_is(importdir_folder_response, 200)
+        with self._different_user(email="test@galaxy.org"):
+            importdir_folder_load_payload = {
+                "encoded_folder_id": self.library["root_folder_id"],
+                "source": "importdir_folder",
+                "path": self.admin_dir_to_import,
+            }
+            importdir_folder_response = self._post("libraries/datasets", data=importdir_folder_load_payload)
+            self._assert_status_code_is(importdir_folder_response, 200)
 
-        importdir_file_load_payload = {
-            "encoded_folder_id": self.library["root_folder_id"],
-            "source": "importdir_file",
-            "path": self.admin_file_to_import,
-        }
-        importdir_file_response = self._post("libraries/datasets", data=importdir_file_load_payload, admin=True)
-        self._assert_status_code_is(importdir_file_response, 200)
+            importdir_file_load_payload = {
+                "encoded_folder_id": self.library["root_folder_id"],
+                "source": "importdir_file",
+                "path": self.admin_file_to_import,
+            }
+            importdir_file_response = self._post("libraries/datasets", data=importdir_file_load_payload)
+            self._assert_status_code_is(importdir_file_response, 200)
