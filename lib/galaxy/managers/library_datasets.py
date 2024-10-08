@@ -24,6 +24,8 @@ from galaxy.model import (
     LibraryFolder,
 )
 from galaxy.model.base import transaction
+from galaxy.schema.fields import DecodedDatabaseIdField
+from galaxy.schema.library_datasets import LibraryDatasetsShowResponse
 from galaxy.structured_app import MinimalManagerApp
 from galaxy.util import validation
 
@@ -39,22 +41,25 @@ class LibraryDatasetsManager(ModelManager[LibraryDataset]):
         super().__init__(app)
         self.dataset_assoc_manager = DatasetAssociationManager(app)
 
-    def get(self, trans, decoded_library_dataset_id, check_accessible=True) -> LibraryDataset:
-        """
-        Get the library dataset from the DB.
+    def show(
+        self,
+        trans: ProvidesUserContext,
+        library_dataset_id: DecodedDatabaseIdField,
+    ) -> LibraryDatasetsShowResponse:
+        """Return the serialized library dataset."""
+        ld = self.get(trans, library_dataset_id)
+        serialized = self._serialize(trans, ld)
+        return serialized
 
-        :param  decoded_library_dataset_id: decoded library dataset id
-        :type   decoded_library_dataset_id: int
-        :param  check_accessible:           flag whether to check that user can access item
-        :type   check_accessible:           bool
-
-        :returns:   the requested library dataset
-        :rtype:     galaxy.model.LibraryDataset
-        """
-        try:
-            ld = get_library_dataset(trans.sa_session, decoded_library_dataset_id)
-        except Exception as e:
-            raise InternalServerError(f"Error loading from the database.{util.unicodify(e)}")
+    def get(
+        self,
+        trans,
+        decoded_library_dataset_id: int,
+        check_accessible: bool = True,
+    ) -> LibraryDataset:
+        """Get the library dataset from the DB."""
+        stmt = select(LibraryDataset).where(LibraryDataset.id == decoded_library_dataset_id)
+        ld = trans.sa_session.scalars(stmt).one()
         ld = self.secure(trans, ld, check_accessible)
         return ld
 
@@ -228,7 +233,7 @@ class LibraryDatasetsManager(ModelManager[LibraryDataset]):
         else:
             return ld
 
-    def serialize(self, trans, ld: LibraryDataset) -> Dict[str, Any]:
+    def _serialize(self, trans, ld: LibraryDataset) -> LibraryDatasetsShowResponse:
         """Serialize the library dataset into a dictionary."""
         current_user_roles = trans.get_current_user_roles()
 
@@ -243,21 +248,21 @@ class LibraryDatasetsManager(ModelManager[LibraryDataset]):
         for expired_ldda in ld.expired_datasets:
             expired_ldda_versions.append((self.app.security.encode_id(expired_ldda.id), expired_ldda.name))
 
-        rval = self.app.security.encode_all_ids(ld.to_dict())
-        if len(expired_ldda_versions) > 0:
-            rval["has_versions"] = True
-            rval["expired_versions"] = expired_ldda_versions
+        rval = ld.to_dict()
+        rval["has_versions"] = True if len(expired_ldda_versions) > 0 else False
+        rval["expired_versions"] = expired_ldda_versions
 
+        rval["job_stdout"] = rval["job_stderr"] = rval["uuid"] = None
         ldda = ld.library_dataset_dataset_association
         if ldda.creating_job_associations:
-            if ldda.creating_job_associations[0].job.stdout:
-                rval["job_stdout"] = ldda.creating_job_associations[0].job.stdout.strip()
-            if ldda.creating_job_associations[0].job.stderr:
-                rval["job_stderr"] = ldda.creating_job_associations[0].job.stderr.strip()
+            job = ldda.creating_job_associations[0].job
+            if job.stdout:
+                rval["job_stdout"] = job.stdout.strip()
+            if job.stderr:
+                rval["job_stderr"] = job.stderr.strip()
         if ldda.dataset.uuid:
             rval["uuid"] = str(ldda.dataset.uuid)
         rval["deleted"] = ld.deleted
-        rval["folder_id"] = f"F{rval['folder_id']}"
         rval["full_path"] = full_path
         rval["file_size"] = util.nice_size(int(ldda.get_size(calculate_size=False)))
         rval["date_uploaded"] = ldda.create_time.isoformat()
@@ -272,7 +277,7 @@ class LibraryDatasetsManager(ModelManager[LibraryDataset]):
         rval["can_user_manage"] = trans.user_is_admin or self.app.security_agent.can_manage_dataset(
             current_user_roles, ldda.dataset
         )
-        return rval
+        return LibraryDatasetsShowResponse(**rval)
 
     def _build_path(self, trans, folder):
         """
@@ -295,8 +300,3 @@ class LibraryDatasetsManager(ModelManager[LibraryDataset]):
             upper_folder = trans.sa_session.get(LibraryFolder, folder.parent_id)
             path_to_root.extend(self._build_path(trans, upper_folder))
         return path_to_root
-
-
-def get_library_dataset(session, library_dataset_id) -> LibraryDataset:
-    stmt = select(LibraryDataset).where(LibraryDataset.id == library_dataset_id)
-    return session.scalars(stmt).one()

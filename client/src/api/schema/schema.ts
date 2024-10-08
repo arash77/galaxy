@@ -2937,6 +2937,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/libraries/datasets/{dataset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Return library dataset. */
+        get: operations["show_api_libraries_datasets__dataset_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/libraries/deleted": {
         parameters: {
             query?: never;
@@ -13516,6 +13533,72 @@ export interface components {
              * @description A list containing pairs of role names and corresponding encoded IDs which can modify the Library.
              */
             modify_library_role_list: string[][];
+        };
+        /** LibraryDatasetsShowResponse */
+        LibraryDatasetsShowResponse: {
+            /** Can User Manage */
+            can_user_manage: boolean;
+            /** Can User Modify */
+            can_user_modify: boolean;
+            /**
+             * Date Uploaded
+             * Format: date-time
+             */
+            date_uploaded: string;
+            /** Deleted */
+            deleted: boolean;
+            /** Expired Versions */
+            expired_versions: [string, string][];
+            /** File Size */
+            file_size: string;
+            /**
+             * Folder Id
+             * @example 0123456789ABCDEF
+             */
+            folder_id: string;
+            /** Full Path */
+            full_path: [string, string][];
+            /** Has Versions */
+            has_versions: boolean;
+            /**
+             * Id
+             * @example 0123456789ABCDEF
+             */
+            id: string;
+            /** Is Unrestricted */
+            is_unrestricted: boolean;
+            /** Job Stderr */
+            job_stderr: string | null;
+            /** Job Stdout */
+            job_stdout: string | null;
+            /**
+             * Ldda Id
+             * @example 0123456789ABCDEF
+             */
+            ldda_id: string;
+            /**
+             * Model class
+             * @description The name of the database model class.
+             * @constant
+             * @enum {string}
+             */
+            model_class: "LibraryDataset";
+            /** Name */
+            name: string;
+            /**
+             * Parent Library Id
+             * @example 0123456789ABCDEF
+             */
+            parent_library_id: string;
+            /** Tags */
+            tags: string[];
+            /**
+             * Update Time
+             * Format: date-time
+             */
+            update_time: string;
+            /** Uuid */
+            uuid: string | null;
         };
         /** LibraryDestination */
         LibraryDestination: {
@@ -27834,6 +27917,49 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LibrarySummary"];
+                };
+            };
+            /** @description Request Error */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageExceptionModel"];
+                };
+            };
+            /** @description Server Error */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageExceptionModel"];
+                };
+            };
+        };
+    };
+    show_api_libraries_datasets__dataset_id__get: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The user ID that will be used to effectively make this API call. Only admins and designated users can make API calls on behalf of other users. */
+                "run-as"?: string | null;
+            };
+            path: {
+                dataset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDatasetsShowResponse"];
                 };
             };
             /** @description Request Error */

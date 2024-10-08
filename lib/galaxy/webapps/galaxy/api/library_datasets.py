@@ -26,7 +26,11 @@ from galaxy.managers import (
     library_datasets,
     roles,
 )
+from galaxy.managers.context import ProvidesUserContext
+from galaxy.managers.library_datasets import LibraryDatasetsManager
 from galaxy.model.base import transaction
+from galaxy.schema.fields import DecodedDatabaseIdField
+from galaxy.schema.library_datasets import LibraryDatasetsShowResponse
 from galaxy.structured_app import StructuredApp
 from galaxy.tools.actions import upload_common
 from galaxy.tools.parameters import populate_state
@@ -42,9 +46,32 @@ from galaxy.web import (
     expose_api_anonymous,
 )
 from galaxy.webapps.base.controller import UsesVisualizationMixin
+from galaxy.webapps.galaxy.api import (
+    depends,
+    DependsOnTrans,
+    Router,
+)
 from . import BaseGalaxyAPIController
 
 log = logging.getLogger(__name__)
+
+router = Router(tags=["libraries"])
+
+
+@router.cbv
+class FastAPILibraryDatasets:
+    manager: LibraryDatasetsManager = depends(LibraryDatasetsManager)
+
+    @router.get(
+        "/api/libraries/datasets/{dataset_id}",
+        summary="Return library dataset.",
+    )
+    def show(
+        self,
+        dataset_id: DecodedDatabaseIdField,
+        trans: ProvidesUserContext = DependsOnTrans,
+    ) -> LibraryDatasetsShowResponse:
+        return self.manager.show(trans, dataset_id)
 
 
 class LibraryDatasetsController(BaseGalaxyAPIController, UsesVisualizationMixin, LibraryActions):
@@ -55,23 +82,6 @@ class LibraryDatasetsController(BaseGalaxyAPIController, UsesVisualizationMixin,
         self.role_manager = roles.RoleManager(app)
         self.ld_manager = library_datasets.LibraryDatasetsManager(app)
         self.ldda_manager = lddas.LDDAManager(app)
-
-    @expose_api_anonymous
-    def show(self, trans, id, **kwd):
-        """
-        GET /api/libraries/datasets/{encoded_dataset_id}
-
-        Show the details of a library dataset.
-
-        :param  id:      the encoded id of the library dataset to query
-        :type   id:      an encoded id string
-
-        :returns:   detailed library dataset information
-        :rtype:     dictionary
-        """
-        ld = self.ld_manager.get(trans, managers_base.decode_id(self.app, id))
-        serialized = self.ld_manager.serialize(trans, ld)
-        return serialized
 
     @expose_api_anonymous
     def show_version(self, trans, encoded_dataset_id, encoded_ldda_id, **kwd):
@@ -201,7 +211,7 @@ class LibraryDatasetsController(BaseGalaxyAPIController, UsesVisualizationMixin,
         library_dataset = self.ld_manager.get(trans, managers_base.decode_id(self.app, encoded_dataset_id))
         self.ld_manager.check_modifiable(trans, library_dataset)
         updated = self.ld_manager.update(library_dataset, payload, trans=trans)
-        serialized = self.ld_manager.serialize(trans, updated)
+        serialized = self.ld_manager._serialize(trans, updated)
         return serialized
 
     @expose_api
