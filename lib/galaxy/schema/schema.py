@@ -3677,7 +3677,7 @@ class PageSummaryBase(Model):
         ...,  # Required
         title="Identifier",
         description="The title slug for the page URL, must be unique.",
-        pattern=r"^[a-z0-9\-]+$",
+        pattern=r"^[^/:?#]+$",
     )
 
 
