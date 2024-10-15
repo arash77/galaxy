@@ -30,3 +30,4 @@ types-setuptools==75.1.0.20240917 ; python_version >= "3.8" and python_version <
 types-six==1.16.21.20240513 ; python_version >= "3.8" and python_version < "3.13"
 types-urllib3==1.26.25.14 ; python_version >= "3.8" and python_version < "3.13"
 typing-extensions==4.12.2 ; python_version >= "3.8" and python_version < "3.13"
+types-python-slugify==8.0.2.20240310 ; python_version >= "3.8" and python_version < "3.13"
