@@ -132,7 +132,7 @@ def _run_migrations():
 revision requiring exclusive access to a database object. To avoid this error, it is recommended to
 shut down all Galaxy procesess during database migration."""
                 log.error(msg)
-                raise
+            raise
 
 
 def _get_url_from_config() -> str:
