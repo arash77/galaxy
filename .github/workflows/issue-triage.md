@@ -28,3 +28,6 @@ Analyze the issue text to categorize it. Use the `add-labels` safe output:
 
 ## 3. Root Cause / Architecture Analysis
 If the issue is actionable, search the repository context. Identify the most likely subsystems or files in the codebase that are relevant to the issue. Use the `add-comment` safe output to post a brief technical summary of where maintainers should look first to address the ticket.
+
+## 4. STOP EXECUTION
+**CRITICAL:** Your job is ONLY to triage the issue. You are strictly forbidden from writing code, modifying files, or attempting to install dependencies to fix the issue yourself. Once you have posted the comment via the `add-comment` safe output, you MUST call the `noop` tool with a message explaining you have completed the triage, and then immediately terminate.
