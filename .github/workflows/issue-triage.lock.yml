@@ -22,14 +22,13 @@
 # For more information: https://github.github.com/gh-aw/introduction/overview/
 #
 #
-# gh-aw-metadata: {"schema_version":"v1","frontmatter_hash":"118b06753326e449158c783db56c831af862b1e5e5c5f0dc9b951cae4adc7fb9","compiler_version":"v0.50.0"}
+# gh-aw-metadata: {"schema_version":"v1","frontmatter_hash":"478b5b3481ffd09e7e6e68f27febdc8144a23db523adbdabe74a226376e4d3a5","compiler_version":"v0.50.0"}
 
 name: "Autonomous Issue Triage"
 "on":
   issues:
     types:
     - opened
-    - reopened
 
 permissions: {}
 

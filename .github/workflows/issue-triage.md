@@ -1,7 +1,7 @@
 ---
 on:
   issues:
-    types: [opened,reopened]
+    types: [opened]
 engine: gemini
 permissions:
   contents: read
