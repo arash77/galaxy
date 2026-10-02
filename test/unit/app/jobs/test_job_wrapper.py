@@ -6,6 +6,7 @@ from typing import (
     cast,
     TYPE_CHECKING,
 )
+from unittest import mock
 from uuid import uuid4
 
 from galaxy.app_unittest_utils.tools_support import (
@@ -94,6 +95,15 @@ class AbstractTestCases:
             with self._prepared_wrapper() as wrapper:
                 assert TEST_DEPENDENCIES_COMMANDS == wrapper.dependency_shell_commands
 
+        def test_check_tool_output_masks_the_job_secrets(self):
+            wrapper = self._wrapper()
+            # A TaskWrapper checks the output of its Task, which has no user to look secrets up for.
+            checked = wrapper.get_task() if isinstance(wrapper, TaskWrapper) else self.job
+            with mock.patch("galaxy.jobs.job_secret_values", return_value=["s3cret-token"]) as job_secret_values:
+                wrapper.check_tool_output("token: s3cret-token", "", 0, checked)
+            assert job_secret_values.call_args.args[2] is self.job
+            assert checked.tool_stdout == "token: ***"
+
         @abc.abstractmethod
         def _wrapper(self) -> JobWrapper:
             pass
@@ -152,6 +162,8 @@ class MockTool:
         self.dependencies = []
         self.requires_galaxy_python_environment = False
         self.id = "mock_id"
+        self.stdio_regexes = []
+        self.stdio_exit_codes = []
         self.home_target = None
         self.tmp_target = None
         self.tool_source = Bunch(to_string=lambda: "")
