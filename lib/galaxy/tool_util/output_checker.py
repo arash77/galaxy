@@ -142,6 +142,7 @@ def check_output(
     stdout: str,
     stderr: str,
     tool_exit_code: int,
+    mask: Callable[[str], str | None] | None = None,
 ) -> tuple[str, str, str, list[AnyJobMessage]]:
     """
     Check the output of a tool - given the stdout, stderr, and the tool's
@@ -153,6 +154,8 @@ def check_output(
     Note that, if the tool did not define any exit code handling or
     any stdio/stderr handling, then it reverts back to previous behavior:
     if stderr contains anything, then False is returned.
+
+    ``mask``, if given, hides secrets in the output this logs.
     """
     # By default, the tool succeeded. This covers the case where the code
     # has a bug but the tool was ok, and it lets a workflow continue.
@@ -234,7 +237,8 @@ def check_output(
             elif max_error_level >= StdioErrorLevel.FATAL:
                 error_reason = ""
                 if job_messages:
-                    error_reason = f" Reasons are {job_messages}"
+                    logged_messages = mask_job_messages(job_messages, mask) if mask else job_messages
+                    error_reason = f" Reasons are {logged_messages}"
                 log.info(f"Job error detected, failing job.{error_reason}")
                 state = DETECTED_JOB_STATE.GENERIC_ERROR
 
@@ -247,7 +251,7 @@ def check_output(
             #          + "checking stderr for success" )
             if stderr:
                 state = DETECTED_JOB_STATE.GENERIC_ERROR
-                peek = stderr[0:ERROR_PEEK_SIZE] if stderr else ""
+                peek = ((mask(stderr) or "") if mask else stderr)[0:ERROR_PEEK_SIZE]
                 log.info(f"Job failed because of contents in the standard error stream: [{peek}]")
     except Exception:
         log.exception("Job state check encountered unexpected exception; assuming execution successful")

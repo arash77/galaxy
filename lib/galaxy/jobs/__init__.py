@@ -2500,7 +2500,12 @@ class MinimalJobWrapper(HasResourceParameters):
 
     def check_tool_output(self, tool_stdout, tool_stderr, tool_exit_code, job, job_stdout=None, job_stderr=None):
         state, tool_stdout, tool_stderr, job_messages = check_output(
-            self.tool.stdio_regexes, self.tool.stdio_exit_codes, tool_stdout, tool_stderr, tool_exit_code
+            self.tool.stdio_regexes,
+            self.tool.stdio_exit_codes,
+            tool_stdout,
+            tool_stderr,
+            tool_exit_code,
+            mask=lambda text: self._mask_secrets(text)[0],
         )
         # Masked after the check, so the tool's error patterns still see what it printed.
         tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
