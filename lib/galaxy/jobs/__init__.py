@@ -1254,19 +1254,20 @@ class MinimalJobWrapper(HasResourceParameters):
         assert job
         return job
 
-    def get_secret_forms(self, job: Job) -> list[str]:
+    def get_secret_forms(self) -> list[str]:
         """Every form of the secret values this job was given, so they can be masked."""
         if self._secret_forms is None:
-            self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, job))
+            # From the job itself: a TaskWrapper checks the output of a Task, which has no user.
+            self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, self.get_job()))
         return self._secret_forms
 
-    def _mask_secrets(self, job: Job, *texts: str | None) -> list[str | None]:
-        forms = self.get_secret_forms(job)
+    def _mask_secrets(self, *texts: str | None) -> list[str | None]:
+        forms = self.get_secret_forms()
         return [mask_secrets(text, forms) for text in texts]
 
     def _mask_imported_job(self, job: Job) -> None:
         """Mask what the extended metadata step saved, since it ran where the secrets are not known."""
-        forms = self.get_secret_forms(job)
+        forms = self.get_secret_forms()
         if not forms:
             return
         job.tool_stdout = mask_secrets(job.tool_stdout, forms)
@@ -1531,7 +1532,7 @@ class MinimalJobWrapper(HasResourceParameters):
         # Might be AssertionError or other exception
         message = str(message)
         message, tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
-            job, message, tool_stdout, tool_stderr, job_stdout, job_stderr
+            message, tool_stdout, tool_stderr, job_stdout, job_stderr
         )
         working_directory_exists = self.working_directory_exists()
 
@@ -1550,7 +1551,7 @@ class MinimalJobWrapper(HasResourceParameters):
                 # a better message
                 etype, evalue, tb = sys.exc_info()
             # Exported with the job and sent with error reports, like the message.
-            (job.traceback,) = self._mask_secrets(job, job.traceback)
+            (job.traceback,) = self._mask_secrets(job.traceback)
 
             try:
                 if self.outputs_to_working_directory and not self.__link_file_check() and working_directory_exists:
@@ -2175,7 +2176,7 @@ class MinimalJobWrapper(HasResourceParameters):
         # default post job setup
         job = self.get_job()
         tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
-            job, tool_stdout, tool_stderr, job_stdout, job_stderr
+            tool_stdout, tool_stderr, job_stdout, job_stderr
         )
 
         def fail(message=job.info, exception=None):
@@ -2318,7 +2319,7 @@ class MinimalJobWrapper(HasResourceParameters):
             except Exception:
                 log.exception("Job %s failed unexpectedly during output discovery", job.id)
                 final_job_state = job.states.ERROR
-                (job.traceback,) = self._mask_secrets(job, unicodify(traceback.format_exc(), strip_null=True))
+                (job.traceback,) = self._mask_secrets(unicodify(traceback.format_exc(), strip_null=True))
                 job.job_messages = [
                     *(job.job_messages or []),
                     output_discovery_job_message(),
@@ -2505,10 +2506,9 @@ class MinimalJobWrapper(HasResourceParameters):
         )
 
     def check_tool_output(self, tool_stdout, tool_stderr, tool_exit_code, job, job_stdout=None, job_stderr=None):
-        if job is not None:
-            tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
-                job, tool_stdout, tool_stderr, job_stdout, job_stderr
-            )
+        tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
+            tool_stdout, tool_stderr, job_stdout, job_stderr
+        )
         state, tool_stdout, tool_stderr, job_messages = check_output(
             self.tool.stdio_regexes, self.tool.stdio_exit_codes, tool_stdout, tool_stderr, tool_exit_code
         )
