@@ -1,12 +1,18 @@
 import logging
+from typing import (
+    Optional,
+    TYPE_CHECKING,
+)
 
 from sqlalchemy import select
 from sqlalchemy.orm import scoped_session
 
 from galaxy.exceptions import RequestParameterInvalidException
+from galaxy.managers.api_keys import ApiKeyManager
 from galaxy.model import (
     Credential,
     CredentialsGroup,
+    Job,
     JobCredentialsContextAssociation,
     User,
     UserCredentials,
@@ -25,6 +31,10 @@ from galaxy.security.vault import (
 )
 from galaxy.tool_util.deps.requirements import CredentialsRequirement
 from galaxy.util import now
+
+if TYPE_CHECKING:
+    from galaxy.structured_app import MinimalManagerApp
+    from galaxy.tools import Tool
 
 log = logging.getLogger(__name__)
 
@@ -342,3 +352,32 @@ class UserCredentialsEnvironmentBuilder:
                 env_variables.append({"name": variable.inject_as_env, "value": variable_value})
 
         return env_variables
+
+
+def job_secret_values(app: "MinimalManagerApp", tool: Optional["Tool"], job: Job) -> list[str]:
+    """The secret values a job was given, so they can be masked in what it prints.
+
+    These are the tool's credential secrets, and the user's Galaxy API key when the tool injects it.
+    Credential variables are not secret and are left out.
+    """
+    if tool is None:
+        return []
+    requirements = tool.credentials or []
+    injects_api_key = any(env.get("inject") == "api_key" for env in tool.environment_variables)
+    # The user the values were injected for, see ToolEvaluator._user
+    user = (job.history.user if job.history else job.user) if requirements or injects_api_key else None
+    if user is None:
+        return []
+    values: list[str] = []
+    try:
+        if requirements:
+            secret_names = {secret.inject_as_env for service in requirements for secret in service.secrets}
+            env_variables = UserCredentialsEnvironmentBuilder(
+                app.vault, app.model.context, user
+            ).build_from_job_context(requirements=requirements, context=job.credentials_context_associations)
+            values.extend(env["value"] for env in env_variables if env["name"] in secret_names)
+        if injects_api_key and (api_key := ApiKeyManager(app).get_api_key(user)):
+            values.append(api_key.key)
+    except Exception:
+        log.exception("Could not read the secrets of job %s to mask them", job.id)
+    return values

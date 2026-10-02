@@ -77,6 +77,7 @@ from galaxy.jobs.runners import (
     BaseJobRunner,
     JobState,
 )
+from galaxy.managers.credentials import job_secret_values
 from galaxy.metadata import get_metadata_compute_strategy
 from galaxy.model import (
     Dataset,
@@ -100,6 +101,7 @@ from galaxy.schema.tasks import ComputeDatasetHashTaskRequest
 from galaxy.structured_app import MinimalManagerApp
 from galaxy.tool_util.deps import requirements
 from galaxy.tool_util.output_checker import (
+    AnyJobMessage,
     check_output,
     DETECTED_JOB_STATE,
     output_discovery_job_message,
@@ -124,6 +126,10 @@ from galaxy.util.bunch import Bunch
 from galaxy.util.expressions import ExpressionContext
 from galaxy.util.path import external_chown
 from galaxy.util.properties import running_from_source
+from galaxy.util.secret_masker import (
+    mask_secrets,
+    secret_forms,
+)
 from galaxy.util.xml_macros import load
 from galaxy.web_stack.handlers import ConfiguresHandlers
 from galaxy.work.context import WorkRequestContext
@@ -1019,6 +1025,7 @@ class MinimalJobWrapper(HasResourceParameters):
         self.sa_session = self.app.model.context
         self.extra_filenames: list[str] = []
         self.environment_variables: list[dict[str, str]] = []
+        self._secret_forms: list[str] | None = None
         self.interactivetools: list[dict[str, Any]] = []
         self.command_line: str | None = None
         self.version_command_line = None
@@ -1246,6 +1253,37 @@ class MinimalJobWrapper(HasResourceParameters):
         job = self.sa_session.get(Job, self.job_id)
         assert job
         return job
+
+    def get_secret_forms(self, job: Job) -> list[str]:
+        """Every form of the secret values this job was given, so they can be masked."""
+        if self._secret_forms is None:
+            self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, job))
+        return self._secret_forms
+
+    def _mask_secrets(self, job: Job, *texts: str | None) -> list[str | None]:
+        forms = self.get_secret_forms(job)
+        return [mask_secrets(text, forms) for text in texts]
+
+    def _mask_imported_job(self, job: Job) -> None:
+        """Mask what the extended metadata step saved, since it ran where the secrets are not known."""
+        forms = self.get_secret_forms(job)
+        if not forms:
+            return
+        job.tool_stdout = mask_secrets(job.tool_stdout, forms)
+        job.tool_stderr = mask_secrets(job.tool_stderr, forms)
+        if job.job_messages:
+            job.job_messages = [
+                cast(
+                    AnyJobMessage,
+                    {
+                        key: mask_secrets(value, forms) if isinstance(value, str) else value
+                        for key, value in message.items()
+                    },
+                )
+                for message in job.job_messages
+            ]
+        for dataset_assoc in job.output_datasets + job.output_library_datasets:
+            dataset_assoc.dataset.info = mask_secrets(dataset_assoc.dataset.info, forms)
 
     def get_id_tag(self):
         # For compatibility with drmaa, which uses job_id right now, and TaskWrapper
@@ -1492,6 +1530,9 @@ class MinimalJobWrapper(HasResourceParameters):
 
         # Might be AssertionError or other exception
         message = str(message)
+        message, tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
+            job, message, tool_stdout, tool_stderr, job_stdout, job_stderr
+        )
         working_directory_exists = self.working_directory_exists()
 
         if not job.tasks and working_directory_exists:
@@ -1508,6 +1549,8 @@ class MinimalJobWrapper(HasResourceParameters):
                 # Get the exception and let the tool attempt to generate
                 # a better message
                 etype, evalue, tb = sys.exc_info()
+            # Exported with the job and sent with error reports, like the message.
+            (job.traceback,) = self._mask_secrets(job, job.traceback)
 
             try:
                 if self.outputs_to_working_directory and not self.__link_file_check() and working_directory_exists:
@@ -2131,6 +2174,9 @@ class MinimalJobWrapper(HasResourceParameters):
 
         # default post job setup
         job = self.get_job()
+        tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
+            job, tool_stdout, tool_stderr, job_stdout, job_stderr
+        )
 
         def fail(message=job.info, exception=None):
             if not isinstance(exception, (AssertionError, MessageException)):
@@ -2222,6 +2268,7 @@ class MinimalJobWrapper(HasResourceParameters):
                     tag_handler=self.app.tag_handler.create_tag_handler_session(job.galaxy_session),
                 )
                 object_import_tracker = import_model_store.perform_import(history=job.history, job=job)
+                self._mask_imported_job(job)
                 # The import leaves job.state untouched so nothing polling the job can see it finish before
                 # exec_after_process and the final commit below have run.
                 if object_import_tracker.job_states_by_id.get(job.id) == job.states.ERROR:
@@ -2271,7 +2318,7 @@ class MinimalJobWrapper(HasResourceParameters):
             except Exception:
                 log.exception("Job %s failed unexpectedly during output discovery", job.id)
                 final_job_state = job.states.ERROR
-                job.traceback = unicodify(traceback.format_exc(), strip_null=True)
+                (job.traceback,) = self._mask_secrets(job, unicodify(traceback.format_exc(), strip_null=True))
                 job.job_messages = [
                     *(job.job_messages or []),
                     output_discovery_job_message(),
@@ -2458,6 +2505,10 @@ class MinimalJobWrapper(HasResourceParameters):
         )
 
     def check_tool_output(self, tool_stdout, tool_stderr, tool_exit_code, job, job_stdout=None, job_stderr=None):
+        if job is not None:
+            tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
+                job, tool_stdout, tool_stderr, job_stdout, job_stderr
+            )
         state, tool_stdout, tool_stderr, job_messages = check_output(
             self.tool.stdio_regexes, self.tool.stdio_exit_codes, tool_stdout, tool_stderr, tool_exit_code
         )

@@ -48,6 +48,8 @@ def finishing_job(tmp_path, request):
     wrapper.command_line = "tool command"
     wrapper.tool.stdio_regexes = []
     wrapper.tool.stdio_exit_codes = []
+    wrapper.get_secret_forms.return_value = []
+    wrapper._mask_secrets = MethodType(JobWrapper._mask_secrets, wrapper)
     wrapper.check_tool_output = MethodType(JobWrapper.check_tool_output, wrapper)
     wrapper.fail.side_effect = MethodType(JobWrapper.fail, wrapper)
     state = InMemoryJobState(wrapper, wrapper.job_destination)
@@ -135,6 +137,23 @@ def test_unreadable_stream(finishing_job, tmp_path, monkeypatch, stream, read_er
     assert ("Input/output error" if read_error else "Permission denied") in job.info
     other_stream = "stderr" if stream == "stdout" else "stdout"
     assert getattr(job, f"tool_{other_stream}") == f"tool {other_stream}"
+
+
+def test_secrets_are_masked_before_the_streams_are_saved(finishing_job, tmp_path):
+    runner, state, job = finishing_job
+    wrapper = state.job_wrapper
+    wrapper.get_secret_forms.return_value = ["s3cret-token"]
+    wrapper.tool.stdio_regexes = [
+        Mock(match="token: .*", stdout_match=True, stderr_match=False, error_level=StdioErrorLevel.WARNING, desc=None)
+    ]
+    (tmp_path / "tool_stdout").write_text("token: s3cret-token")
+    (tmp_path / "tool_stderr").write_text("")
+
+    finish(runner, state)
+
+    assert job.tool_stdout == "token: ***"
+    assert job.job_messages[0]["desc"] == "Warning: Matched on token: ***"
+    wrapper.finish.assert_called_once()
 
 
 @pytest.mark.parametrize("job_state", [model.Job.states.DELETING, model.Job.states.DELETED])
