@@ -19,6 +19,7 @@ from typing import (
     Any,
     Generic,
     Literal,
+    Optional,
     TYPE_CHECKING,
     TypeVar,
     Union,
@@ -60,6 +61,7 @@ from galaxy.util import (
     asbool,
     DATABASE_MAX_STRING_SIZE,
     ExecutionTimer,
+    get_file_size,
     in_directory,
     ParamsWithSpecs,
     shrink_stream_by_size,
@@ -68,6 +70,7 @@ from galaxy.util import (
 )
 from galaxy.util.custom_logging import get_logger
 from galaxy.util.monitors import Monitors
+from galaxy.util.secret_masker import shrink_masked
 from galaxy.version import (
     VERSION,
     VERSION_MAJOR,
@@ -694,7 +697,11 @@ class BaseJobRunner:
             job_state.job_wrapper.change_state(model.Job.states.QUEUED)
             self.app.job_manager.job_handler.dispatcher.put(job_state.job_wrapper)
 
-    def _job_io_for_db(self, stream):
+    def _job_io_for_db(self, stream, job_wrapper: Optional["MinimalJobWrapper"] = None):
+        # A long stream is cut in the middle; mask first, so no piece of a secret is left at the cut.
+        forms = job_wrapper.get_secret_forms() if job_wrapper else None
+        if forms and get_file_size(stream) > DATABASE_MAX_STRING_SIZE:
+            return shrink_masked(stream, DATABASE_MAX_STRING_SIZE, forms, join_by="\n..\n")
         return shrink_stream_by_size(
             stream, DATABASE_MAX_STRING_SIZE, join_by="\n..\n", left_larger=True, beginning_on_size_error=True
         )
@@ -720,7 +727,7 @@ class BaseJobRunner:
                 path = os.path.join(outputs_directory, f"tool_{stream}")
                 try:
                     with open(path, "rb") as stream_file:
-                        tool_streams[stream] = self._job_io_for_db(stream_file)
+                        tool_streams[stream] = self._job_io_for_db(stream_file, job_wrapper)
                 except OSError as exc:
                     if isinstance(exc, FileNotFoundError) and job.state in (
                         model.Job.states.DELETING,
@@ -1049,8 +1056,8 @@ class AsynchronousJobRunner(BaseJobRunner, Monitors, Generic[T]):
         while which_try < self.app.config.retry_job_output_collection + 1:
             try:
                 with open(job_state.output_file, "rb") as stdout_file, open(job_state.error_file, "rb") as stderr_file:
-                    stdout = self._job_io_for_db(stdout_file)
-                    stderr = self._job_io_for_db(stderr_file)
+                    stdout = self._job_io_for_db(stdout_file, job_state.job_wrapper)
+                    stderr = self._job_io_for_db(stderr_file, job_state.job_wrapper)
                 break
             except Exception as e:
                 if which_try == self.app.config.retry_job_output_collection:

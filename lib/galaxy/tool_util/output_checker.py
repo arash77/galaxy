@@ -1,7 +1,9 @@
 import re
+from collections.abc import Callable
 from enum import Enum
 from logging import getLogger
 from typing import (
+    cast,
     Literal,
     TYPE_CHECKING,
 )
@@ -84,6 +86,22 @@ AnyJobMessage = (
     | OutputDiscoveryJobMessage
     | StdioReadErrorJobMessage
 )
+
+
+def mask_job_messages(
+    messages: list[AnyJobMessage] | None, mask: Callable[[str], str | None]
+) -> list[AnyJobMessage] | None:
+    """Apply ``mask`` to the fields of job messages that can quote the tool's output."""
+    if not messages:
+        return messages
+    masked = []
+    for job_message in messages:
+        message = dict(job_message)
+        for key in ("desc", "match"):
+            if isinstance(value := message.get(key), str):
+                message[key] = mask(value)
+        masked.append(cast(AnyJobMessage, message))
+    return masked
 
 
 def output_discovery_job_message(reason: str | None = None) -> OutputDiscoveryJobMessage:

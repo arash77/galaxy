@@ -631,3 +631,9 @@ class TestLiveConsoleSecretMasking(integration_util.IntegrationTestCase):
         # Each hidden character becomes "*", so a reader can keep counting positions.
         assert f"API key: {'*' * len(api_key)}" in stdout
         assert api_key not in stdout
+
+
+class TestLiveConsoleSecretMaskingCachedToolBox(
+    integration_util.CachedToolBoxIntegrationMixin, TestLiveConsoleSecretMasking
+):
+    pass

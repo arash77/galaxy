@@ -1,9 +1,11 @@
 import base64
+import io
 
 from galaxy.util.secret_masker import (
     mask_secrets,
     read_masked_chunk,
     secret_forms,
+    shrink_masked,
 )
 
 
@@ -81,3 +83,9 @@ def test_reading_without_secrets_returns_the_chunk(tmp_path):
     path = tmp_path / "tool_stdout"
     path.write_text("plain output\n")
     assert read_masked_chunk(str(path), 6, 6, []) == "output"
+
+
+def test_shrinking_leaves_no_piece_of_a_secret_at_the_cuts():
+    stream = io.BytesIO(b"a" * 10 + b"s3cret-value" + b"b" * 30 + b"s3cret-value" + b"c" * 10)
+    # Keeping 40 of the 74 bytes cuts through both copies of the secret.
+    assert shrink_masked(stream, 40, secret_forms(["s3cret-value"]), "\n..\n") == "aaaaaaaaaa\n..\ncccccccccc"

@@ -120,10 +120,10 @@ def test_unreadable_stream(finishing_job, tmp_path, monkeypatch, stream, read_er
             raise PermissionError(errno.EACCES, "Permission denied", path)
         return original_open(path, mode)
 
-    def read_stream(stream_file):
+    def read_stream(stream_file, job_wrapper=None):
         if stream_file.name.endswith(f"tool_{stream}"):
             raise OSError(errno.EIO, "Input/output error")
-        return original_read(stream_file)
+        return original_read(stream_file, job_wrapper)
 
     if read_error:
         monkeypatch.setattr(runner, "_job_io_for_db", read_stream)

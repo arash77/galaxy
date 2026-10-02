@@ -1,9 +1,21 @@
+from types import SimpleNamespace
+from typing import Any
+from unittest import mock
+
+import pytest
+
 from galaxy.managers.credentials import (
     CredentialsManager,
     CredentialsModelsSet,
+    job_secret_values,
+    UserCredentialsEnvironmentBuilder,
 )
 from galaxy.model import User
 from galaxy.schema.credentials import SOURCE_TYPE
+from galaxy.tool_util.deps.requirements import (
+    CredentialsRequirement,
+    Secret,
+)
 from .base import BaseTestCase
 
 
@@ -123,3 +135,17 @@ class TestCredentialsManager(BaseTestCase):
         user_data = dict(email=f"{username}@user.email", username=username, password="password")
         user = self.user_manager.create(**user_data)
         return user
+
+
+def test_a_set_secret_that_reads_back_empty_is_an_error():
+    # A Hashicorp vault returns nothing for a secret that is set once its token has expired.
+    tool: Any = SimpleNamespace(
+        credentials=[CredentialsRequirement("service", "1.0", secrets=[Secret("password", "TEST_PASSWORD")])],
+        environment_variables=[],
+    )
+    job: Any = SimpleNamespace(history=None, user=User(), credentials_context_associations=[])
+    app: Any = SimpleNamespace(vault=None, model=SimpleNamespace(context=None))
+    unreadable = [{"name": "TEST_PASSWORD", "value": ""}]
+    with mock.patch.object(UserCredentialsEnvironmentBuilder, "build_from_job_context", return_value=unreadable):
+        with pytest.raises(ValueError):
+            job_secret_values(app, tool, job)

@@ -144,8 +144,8 @@ class LocalJobRunner(BaseJobRunner):
 
             stdout_file.seek(0)
             stderr_file.seek(0)
-            stdout = self._job_io_for_db(stdout_file)
-            stderr = self._job_io_for_db(stderr_file)
+            stdout = self._job_io_for_db(stdout_file, job_wrapper)
+            stderr = self._job_io_for_db(stderr_file, job_wrapper)
             stdout_file.close()
             stderr_file.close()
         except Exception:

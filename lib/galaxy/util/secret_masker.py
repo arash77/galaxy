@@ -7,10 +7,12 @@ still print it, so a leaked secret should be rotated.
 
 import base64
 import json
+import os
 from collections.abc import (
     Iterable,
     Iterator,
 )
+from typing import BinaryIO
 from urllib.parse import quote
 
 MASK = "***"
@@ -58,29 +60,60 @@ def mask_secrets(text: str | None, forms: list[str], keep_length: bool = False) 
     """
     if not text or not forms:
         return text
+    pieces = []
+    last = 0
+    for start, end in _secret_ranges(text, forms):
+        pieces.append(text[last:start])
+        pieces.append("*" * (end - start) if keep_length else MASK)
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
+def _secret_ranges(text: str, forms: list[str]) -> list[list[int]]:
+    """Where ``forms`` occur in ``text``, with overlapping and adjacent matches merged."""
     ranges = []
     for form in forms:
         start = text.find(form)
         while start != -1:
             ranges.append((start, start + len(form)))
             start = text.find(form, start + 1)
-    if not ranges:
-        return text
     ranges.sort()
-    merged = [list(ranges[0])]
-    for start, end in ranges[1:]:
-        if start <= merged[-1][1]:
+    merged: list[list[int]] = []
+    for start, end in ranges:
+        if merged and start <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], end)
         else:
             merged.append([start, end])
-    pieces = []
-    last = 0
-    for start, end in merged:
-        pieces.append(text[last:start])
-        pieces.append("*" * (end - start) if keep_length else MASK)
-        last = end
-    pieces.append(text[last:])
-    return "".join(pieces)
+    return merged
+
+
+def shrink_masked(stream: BinaryIO, size: int, forms: list[str], join_by: str) -> str:
+    """Keep the start and end of a stream bigger than ``size`` bytes, masking secrets first.
+
+    A secret that crosses a cut is hidden whole rather than left in pieces that no form matches.
+    """
+    total = stream.seek(0, os.SEEK_END)
+    margin = max(len(form.encode("utf-8")) for form in forms)
+    head_size = (size - len(join_by) + 1) // 2
+    tail_size = size - len(join_by) - head_size
+    stream.seek(0)
+    head_bytes = stream.read(head_size + margin)
+    tail_start = max(total - tail_size - margin, 0)
+    stream.seek(tail_start)
+    tail_bytes = stream.read()
+    head = head_bytes.decode("utf-8", errors="replace")
+    tail = tail_bytes.decode("utf-8", errors="replace")
+    head_cut = len(head_bytes[:head_size].decode("utf-8", errors="replace"))
+    tail_cut = len(tail_bytes[: total - tail_size - tail_start].decode("utf-8", errors="replace"))
+    # Move each cut to the edge of a secret it would split.
+    for start, end in _secret_ranges(head, forms):
+        if start < head_cut < end:
+            head_cut = start
+    for start, end in _secret_ranges(tail, forms):
+        if start < tail_cut < end:
+            tail_cut = end
+    return f"{mask_secrets(head[:head_cut], forms)}{join_by}{mask_secrets(tail[tail_cut:], forms)}"
 
 
 def read_masked_chunk(path: str, position: int, length: int, forms: list[str]) -> str:
@@ -103,13 +136,23 @@ def read_masked_chunk(path: str, position: int, length: int, forms: list[str]) -
         head = file.read(position - start).decode("utf-8", errors="replace")
     window = head + chunk + tail
     end = len(head) + len(chunk)
-    if len(tail) < margin:
+    if len(tail) < margin and (unfinished := _unfinished_start(window, forms)) is not None:
         # The end of the file may hold the start of a value whose rest is not written yet.
-        for size in range(min(margin, len(window)), 0, -1):
-            suffix = window[-size:]
-            if any(len(form) > size and form.startswith(suffix) for form in forms):
-                end = max(min(end, len(window) - size), len(head))
-                break
+        end = max(min(end, unfinished), len(head))
     masked = mask_secrets(window, forms, keep_length=True)
     assert masked is not None
     return masked[len(head) : end]
+
+
+def _unfinished_start(text: str, forms: list[str]) -> int | None:
+    """Where the earliest value that could continue past the end of ``text`` starts, if any."""
+    earliest = None
+    for form in forms:
+        # Only places where the form's first character occurs can start it.
+        position = text.find(form[0], max(len(text) - len(form) + 1, 0))
+        while position != -1:
+            if form.startswith(text[position:]):
+                earliest = position if earliest is None else min(earliest, position)
+                break
+            position = text.find(form[0], position + 1)
+    return earliest
