@@ -1,3 +1,5 @@
+import time
+
 from galaxy.model.db.user import get_user_by_email
 from galaxy.security.vault import UserVaultWrapper
 from galaxy_test.base.api_util import random_name
@@ -585,3 +587,47 @@ class TestJobSecretMaskingExtendedMetadata(TestJobSecretMasking):
     def handle_galaxy_config_kwds(cls, config):
         super().handle_galaxy_config_kwds(config)
         config["metadata_strategy"] = "extended"
+
+
+LIVE_OUTPUT_JOB_CONFIG = {
+    "runners": {"local": {"load": "galaxy.jobs.runners.local:LocalJobRunner", "workers": 1}},
+    "execution": {
+        "default": "local_live",
+        "environments": {"local_live": {"runner": "local", "live_tool_output_reporting": True}},
+    },
+}
+
+
+class TestLiveConsoleSecretMasking(integration_util.IntegrationTestCase):
+    dataset_populator: DatasetPopulator
+    framework_tool_and_types = True
+
+    @classmethod
+    def handle_galaxy_config_kwds(cls, config):
+        super().handle_galaxy_config_kwds(config)
+        config["job_config"] = LIVE_OUTPUT_JOB_CONFIG
+
+    def setUp(self):
+        super().setUp()
+        self.dataset_populator = DatasetPopulator(self.galaxy_interactor)
+
+    @skip_without_tool("secrets_masked_test")
+    def test_api_key_is_masked_while_the_job_runs(self, history_id):
+        api_key = self.galaxy_interactor.api_key
+        assert api_key
+        run = self.dataset_populator.run_tool("secrets_masked_test", {"wait_seconds": 30}, history_id)
+        job_id = run["jobs"][0]["id"]
+        positions = {"stdout_position": 0, "stdout_length": 10000, "stderr_position": 0, "stderr_length": 10000}
+        stdout = ""
+        for _ in range(60):
+            # Like the client, only ask for console output once the job runs.
+            if self.dataset_populator.get_job_details(job_id).json()["state"] == "running":
+                console = self._get(f"jobs/{job_id}/console_output", positions).json()
+                stdout = console.get("stdout") or ""
+                if console["state"] == "running" and "API key: " in stdout:
+                    break
+            time.sleep(1)
+        assert "API key: " in stdout, stdout
+        # Each hidden character becomes "*", so a reader can keep counting positions.
+        assert f"API key: {'*' * len(api_key)}" in stdout
+        assert api_key not in stdout

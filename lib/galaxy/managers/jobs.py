@@ -56,6 +56,7 @@ from galaxy.managers.context import (
     ProvidesHistoryContext,
     ProvidesUserContext,
 )
+from galaxy.managers.credentials import job_secret_values
 from galaxy.managers.datasets import DatasetManager
 from galaxy.managers.hdas import (
     dereference_input_to_hda,
@@ -127,6 +128,10 @@ from galaxy.util.search import (
     FilteredTerm,
     parse_filters_structured,
     RawTextTerm,
+)
+from galaxy.util.secret_masker import (
+    read_masked_chunk,
+    secret_forms,
 )
 from galaxy.work.context import WorkRequestContext
 
@@ -406,21 +411,25 @@ class JobManager:
         console_output["state"] = job.state
         if job.state == job.states.RUNNING:
             working_directory = JobWorkingDirectory(job, trans.app.object_store).resolve()
+            # The files are read as the tool writes them, before the job's saved output is masked.
+            tool_uuid = job.dynamic_tool.uuid if job.dynamic_tool else None
+            tool = trans.app.toolbox.get_tool(job.tool_id, job.tool_version, tool_uuid=tool_uuid, user=job.user)
+            forms = secret_forms(job_secret_values(trans.app, tool if isinstance(tool, Tool) else None, job))
             if stdout_length > -1 and stdout_position > -1:
                 try:
                     stdout_path = Path(working_directory) / STDOUT_LOCATION
-                    stdout_file = open(stdout_path)
-                    stdout_file.seek(stdout_position)
-                    console_output["stdout"] = stdout_file.read(stdout_length)
+                    console_output["stdout"] = read_masked_chunk(
+                        str(stdout_path), stdout_position, stdout_length, forms
+                    )
                 except Exception as e:
                     log.error("Could not read STDOUT: %s", e)
                     console_output["stdout"] = ""
             if stderr_length > -1 and stderr_position > -1:
                 try:
                     stderr_path = Path(working_directory) / STDERR_LOCATION
-                    stderr_file = open(stderr_path)
-                    stderr_file.seek(stderr_position)
-                    console_output["stderr"] = stderr_file.read(stderr_length)
+                    console_output["stderr"] = read_masked_chunk(
+                        str(stderr_path), stderr_position, stderr_length, forms
+                    )
                 except Exception as e:
                     log.error("Could not read STDERR: %s", e)
                     console_output["stderr"] = ""
