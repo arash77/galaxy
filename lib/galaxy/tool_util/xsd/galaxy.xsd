@@ -828,6 +828,10 @@ Security considerations:
   - They will be expanded by the executing shell before execution, i.e. they will be visible on the
     process list which can be a problem when jobs are executed on shared systems.
   - Values of credentials are not sanitized, i.e. users could abuse them for code injection.
+- Tools must not print secrets. If one does, Galaxy replaces the secret values it finds in the job's
+  standard output and error and its messages with ``***`` before saving them. This is best effort:
+  a value the tool changes (for example encodes in an unusual way or splits) is not found, and output
+  datasets are not masked.
 - If values/secrets can be supplied via a file, then a helper script that takes the variables from the
   environment and writes them to a file can be used.
 - For transparency,  it is good to document the extent to which credentials are exposed in the tool help / credential help.
