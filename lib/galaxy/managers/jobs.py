@@ -414,7 +414,12 @@ class JobManager:
             # The files are read as the tool writes them, before the job's saved output is masked.
             tool_uuid = job.dynamic_tool.uuid if job.dynamic_tool else None
             tool = trans.app.toolbox.get_tool(job.tool_id, job.tool_version, tool_uuid=tool_uuid, user=job.user)
-            forms = secret_forms(job_secret_values(trans.app, tool if isinstance(tool, Tool) else None, job))
+            try:
+                forms = secret_forms(job_secret_values(trans.app, tool if isinstance(tool, Tool) else None, job))
+            except Exception:
+                # Like the saved output, show nothing that could not be checked.
+                log.exception("Could not read the secrets of job %s to mask its console output", job.id)
+                return {**console_output, "stdout": "", "stderr": ""}
             if stdout_length > -1 and stdout_position > -1:
                 try:
                     stdout_path = Path(working_directory) / STDOUT_LOCATION

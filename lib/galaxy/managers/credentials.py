@@ -358,7 +358,8 @@ def job_secret_values(app: "MinimalManagerApp", tool: Optional["Tool"], job: Job
     """The secret values a job was given, so they can be masked in what it prints.
 
     These are the tool's credential secrets, and the user's Galaxy API key when the tool injects it.
-    Credential variables are not secret and are left out.
+    Credential variables are not secret and are left out. Raises if the values cannot be read, so
+    callers can hide the text instead of saving it unchecked.
     """
     if tool is None:
         return []
@@ -369,15 +370,12 @@ def job_secret_values(app: "MinimalManagerApp", tool: Optional["Tool"], job: Job
     if user is None:
         return []
     values: list[str] = []
-    try:
-        if requirements:
-            secret_names = {secret.inject_as_env for service in requirements for secret in service.secrets}
-            env_variables = UserCredentialsEnvironmentBuilder(
-                app.vault, app.model.context, user
-            ).build_from_job_context(requirements=requirements, context=job.credentials_context_associations)
-            values.extend(env["value"] for env in env_variables if env["name"] in secret_names)
-        if injects_api_key and (api_key := ApiKeyManager(app).get_api_key(user)):
-            values.append(api_key.key)
-    except Exception:
-        log.exception("Could not read the secrets of job %s to mask them", job.id)
+    if requirements:
+        secret_names = {secret.inject_as_env for service in requirements for secret in service.secrets}
+        env_variables = UserCredentialsEnvironmentBuilder(app.vault, app.model.context, user).build_from_job_context(
+            requirements=requirements, context=job.credentials_context_associations
+        )
+        values.extend(env["value"] for env in env_variables if env["name"] in secret_names)
+    if injects_api_key and (api_key := ApiKeyManager(app).get_api_key(user)):
+        values.append(api_key.key)
     return values

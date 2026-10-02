@@ -151,6 +151,8 @@ DEFAULT_LOCAL_WORKERS = 4
 
 DEFAULT_CLEANUP_JOB = "always"
 VALID_TOOL_CLASSES = ["local", "requires_galaxy", "user_defined"]
+# Saved instead of text that may hold a secret Galaxy could not read to mask.
+UNCHECKED_TEXT = "[Hidden: Galaxy could not read this job's secrets to mask them.]"
 
 
 class ResubmitConfigDict(TypedDict, total=False):
@@ -1254,37 +1256,40 @@ class MinimalJobWrapper(HasResourceParameters):
         assert job
         return job
 
-    def get_secret_forms(self) -> list[str]:
-        """Every form of the secret values this job was given, so they can be masked."""
+    def get_secret_forms(self) -> list[str] | None:
+        """Every form of the secret values this job was given, or ``None`` if they could not be read."""
         if self._secret_forms is None:
-            # From the job itself: a TaskWrapper checks the output of a Task, which has no user.
-            self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, self.get_job()))
+            try:
+                # From the job itself: a TaskWrapper checks the output of a Task, which has no user.
+                self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, self.get_job()))
+            except Exception:
+                log.exception("(%s) Could not read the job's secrets, hiding its output", self.get_id_tag())
         return self._secret_forms
 
     def _mask_secrets(self, *texts: str | None) -> list[str | None]:
         forms = self.get_secret_forms()
+        if forms is None:
+            # Fail closed: without the values, any of this text could hold one.
+            return [UNCHECKED_TEXT if text else text for text in texts]
         return [mask_secrets(text, forms) for text in texts]
 
     def _mask_imported_job(self, job: Job) -> None:
         """Mask what the extended metadata step saved, since it ran where the secrets are not known."""
-        forms = self.get_secret_forms()
-        if not forms:
+        if self.get_secret_forms() == []:
             return
-        job.tool_stdout = mask_secrets(job.tool_stdout, forms)
-        job.tool_stderr = mask_secrets(job.tool_stderr, forms)
+        job.tool_stdout, job.tool_stderr = self._mask_secrets(job.tool_stdout, job.tool_stderr)
         if job.job_messages:
-            job.job_messages = [
-                cast(
-                    AnyJobMessage,
-                    {
-                        key: mask_secrets(value, forms) if isinstance(value, str) else value
-                        for key, value in message.items()
-                    },
-                )
-                for message in job.job_messages
-            ]
+            masked_messages = []
+            for job_message in job.job_messages:
+                message = dict(job_message)
+                # The fields that can quote the tool's output.
+                for key in ("desc", "match"):
+                    if isinstance(value := message.get(key), str):
+                        (message[key],) = self._mask_secrets(value)
+                masked_messages.append(cast(AnyJobMessage, message))
+            job.job_messages = masked_messages
         for dataset_assoc in job.output_datasets + job.output_library_datasets:
-            dataset_assoc.dataset.info = mask_secrets(dataset_assoc.dataset.info, forms)
+            (dataset_assoc.dataset.info,) = self._mask_secrets(dataset_assoc.dataset.info)
 
     def get_id_tag(self):
         # For compatibility with drmaa, which uses job_id right now, and TaskWrapper
