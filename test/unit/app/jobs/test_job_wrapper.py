@@ -17,6 +17,7 @@ from galaxy.jobs import (
     JobWrapper,
     MinimalJobWrapper,
     TaskWrapper,
+    UNCHECKED_TEXT,
 )
 from galaxy.jobs.handler import BaseJobHandlerQueue
 from galaxy.model import (
@@ -103,6 +104,13 @@ class AbstractTestCases:
                 wrapper.check_tool_output("token: s3cret-token", "", 0, checked)
             assert job_secret_values.call_args.args[2] is self.job
             assert checked.tool_stdout == "token: ***"
+
+        def test_check_tool_output_hides_output_when_secrets_cannot_be_read(self):
+            wrapper = self._wrapper()
+            checked = wrapper.get_task() if isinstance(wrapper, TaskWrapper) else self.job
+            with mock.patch("galaxy.jobs.job_secret_values", side_effect=Exception("vault unavailable")):
+                wrapper.check_tool_output("token: s3cret-token", "", 0, checked)
+            assert checked.tool_stdout == UNCHECKED_TEXT
 
         @abc.abstractmethod
         def _wrapper(self) -> JobWrapper:
