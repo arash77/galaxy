@@ -3,6 +3,7 @@ from galaxy.security.vault import UserVaultWrapper
 from galaxy_test.base.api_util import random_name
 from galaxy_test.base.populators import (
     CredentialsPopulator,
+    DatasetPopulator,
     skip_without_tool,
 )
 from galaxy_test.driver import integration_util
@@ -543,3 +544,44 @@ class TestCredentialsApi(integration_util.IntegrationTestCase, integration_util.
     def _get_vault_ref(self, payload: dict, group_id: str, secret_name: str) -> str:
         decoded_group_id = self._app.security.decode_id(group_id)
         return f"{payload['source_type']}|{payload['source_id']}|{payload['service_credential']['name']}|{payload['service_credential']['version']}|{decoded_group_id}|{secret_name}"
+
+
+class TestJobSecretMasking(integration_util.IntegrationTestCase, integration_util.ConfiguresDatabaseVault):
+    dataset_populator: DatasetPopulator
+    framework_tool_and_types = True
+
+    @classmethod
+    def handle_galaxy_config_kwds(cls, config):
+        super().handle_galaxy_config_kwds(config)
+        cls._configure_database_vault(config)
+
+    def setUp(self):
+        super().setUp()
+        self.dataset_populator = DatasetPopulator(self.galaxy_interactor)
+
+    @skip_without_tool("secrets_masked_test")
+    def test_secret_is_masked_in_job_details(self):
+        # The tool test makes its own user, credentials and history, so find its job as an admin.
+        self._run_tool_test("secrets_masked_test")
+        jobs = self._get("jobs", {"tool_id": "secrets_masked_test"}, admin=True).json()
+        job_details = self._get(f"jobs/{jobs[0]['id']}", {"full": True}, admin=True).json()
+        output_id = job_details["outputs"]["output"]["id"]
+        output = self._get(f"datasets/{output_id}", admin=True).json()
+        (user,) = [
+            user
+            for user in self._get("users", {"f_email": job_details["user_email"]}, admin=True).json()
+            if user["email"] == job_details["user_email"]
+        ]
+        api_key = self._get(f"users/{user['id']}/api_key", admin=True).json()
+        # The tool test above checked stdout and stderr; check what it cannot see.
+        shown = f"{job_details}\n{output['misc_info']}"
+        assert "test_password_123" not in shown
+        assert api_key not in shown
+        assert "Password: ***" in output["misc_info"]
+
+
+class TestJobSecretMaskingExtendedMetadata(TestJobSecretMasking):
+    @classmethod
+    def handle_galaxy_config_kwds(cls, config):
+        super().handle_galaxy_config_kwds(config)
+        config["metadata_strategy"] = "extended"
