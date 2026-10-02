@@ -131,3 +131,17 @@ class TestOutputChecker(TestCase):
         return check_output(
             self.tool.stdio_regexes, self.tool.stdio_exit_codes, self.stdout, self.stderr, self.tool_exit_code
         )
+
+
+def test_mask_hides_secrets_in_what_is_logged(caplog):
+    def mask(text):
+        return text.replace("s3cret", "***")
+
+    regex = Mock(match="token .*", stdout_match=False, stderr_match=True, error_level=StdioErrorLevel.FATAL, desc=None)
+    with caplog.at_level("INFO", logger="galaxy.tool_util.output_checker"):
+        # Without rules any stderr fails the job; with a fatal regex the matched text is logged.
+        check_output([], [], "", "token s3cret", 0, mask=mask)
+        check_output([regex], [], "", "token s3cret", 0, mask=mask)
+    assert len(caplog.records) == 2
+    assert "token ***" in caplog.text
+    assert "s3cret" not in caplog.text
