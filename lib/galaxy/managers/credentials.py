@@ -375,7 +375,13 @@ def job_secret_values(app: "MinimalManagerApp", tool: Optional["Tool"], job: Job
         env_variables = UserCredentialsEnvironmentBuilder(app.vault, app.model.context, user).build_from_job_context(
             requirements=requirements, context=job.credentials_context_associations
         )
-        values.extend(env["value"] for env in env_variables if env["name"] in secret_names)
+        for env in env_variables:
+            if env["name"] in secret_names:
+                # Only secrets the user set are listed, so an empty one could not be read, as when
+                # a Hashicorp token has expired.
+                if not env["value"]:
+                    raise ValueError(f"Secret {env['name']} could not be read from the vault")
+                values.append(env["value"])
     if injects_api_key and (api_key := ApiKeyManager(app).get_api_key(user)):
         values.append(api_key.key)
     return values

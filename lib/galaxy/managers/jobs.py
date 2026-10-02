@@ -153,6 +153,11 @@ STDOUT_LOCATION = "outputs/tool_stdout"
 STDERR_LOCATION = "outputs/tool_stderr"
 
 
+def _has_more(path: Path, position: int) -> bool:
+    """Whether ``path`` has text past ``position`` (-1 means it is not being read)."""
+    return position > -1 and path.exists() and path.stat().st_size > position
+
+
 class JobLock(BaseModel):
     active: bool = Field(title="Job lock status", description="If active, jobs will not dispatch")
 
@@ -410,19 +415,25 @@ class JobManager:
         console_output = {}
         console_output["state"] = job.state
         if job.state == job.states.RUNNING:
-            working_directory = JobWorkingDirectory(job, trans.app.object_store).resolve()
+            working_directory = Path(JobWorkingDirectory(job, trans.app.object_store).resolve())
+            stdout_path = working_directory / STDOUT_LOCATION
+            stderr_path = working_directory / STDERR_LOCATION
             # The files are read as the tool writes them, before the job's saved output is masked.
-            tool_uuid = job.dynamic_tool.uuid if job.dynamic_tool else None
-            tool = trans.app.toolbox.get_tool(job.tool_id, job.tool_version, tool_uuid=tool_uuid, user=job.user)
-            try:
-                forms = secret_forms(job_secret_values(trans.app, tool if isinstance(tool, Tool) else None, job))
-            except Exception:
+            # Polls with nothing new to show skip looking the secrets up.
+            forms: list[str] | None = []
+            if _has_more(stdout_path, stdout_position) or _has_more(stderr_path, stderr_position):
+                try:
+                    # The tool as the job runner loads it, or None when it is no longer installed.
+                    tool = trans.app.toolbox.tool_for_job(job, check_access=False)
+                    forms = secret_forms(job_secret_values(trans.app, tool, job)) if tool else None
+                except Exception:
+                    log.exception("Could not read the secrets of job %s to mask its console output", job.id)
+                    forms = None
+            if forms is None:
                 # Like the saved output, show nothing that could not be checked.
-                log.exception("Could not read the secrets of job %s to mask its console output", job.id)
                 return {**console_output, "stdout": "", "stderr": ""}
             if stdout_length > -1 and stdout_position > -1:
                 try:
-                    stdout_path = Path(working_directory) / STDOUT_LOCATION
                     console_output["stdout"] = read_masked_chunk(
                         str(stdout_path), stdout_position, stdout_length, forms
                     )
@@ -431,7 +442,6 @@ class JobManager:
                     console_output["stdout"] = ""
             if stderr_length > -1 and stderr_position > -1:
                 try:
-                    stderr_path = Path(working_directory) / STDERR_LOCATION
                     console_output["stderr"] = read_masked_chunk(
                         str(stderr_path), stderr_position, stderr_length, forms
                     )

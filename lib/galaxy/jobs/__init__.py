@@ -101,9 +101,9 @@ from galaxy.schema.tasks import ComputeDatasetHashTaskRequest
 from galaxy.structured_app import MinimalManagerApp
 from galaxy.tool_util.deps import requirements
 from galaxy.tool_util.output_checker import (
-    AnyJobMessage,
     check_output,
     DETECTED_JOB_STATE,
+    mask_job_messages,
     output_discovery_job_message,
 )
 from galaxy.tool_util.parser.stdio import StdioErrorLevel
@@ -1028,6 +1028,7 @@ class MinimalJobWrapper(HasResourceParameters):
         self.extra_filenames: list[str] = []
         self.environment_variables: list[dict[str, str]] = []
         self._secret_forms: list[str] | None = None
+        self._secret_lookup_failed = False
         self.interactivetools: list[dict[str, Any]] = []
         self.command_line: str | None = None
         self.version_command_line = None
@@ -1258,12 +1259,13 @@ class MinimalJobWrapper(HasResourceParameters):
 
     def get_secret_forms(self) -> list[str] | None:
         """Every form of the secret values this job was given, or ``None`` if they could not be read."""
-        if self._secret_forms is None:
+        if self._secret_forms is None and not self._secret_lookup_failed:
             try:
                 # From the job itself: a TaskWrapper checks the output of a Task, which has no user.
                 self._secret_forms = secret_forms(job_secret_values(self.app, self.tool, self.get_job()))
             except Exception:
                 log.exception("(%s) Could not read the job's secrets, hiding its output", self.get_id_tag())
+                self._secret_lookup_failed = True
         return self._secret_forms
 
     def _mask_secrets(self, *texts: str | None) -> list[str | None]:
@@ -1272,24 +1274,6 @@ class MinimalJobWrapper(HasResourceParameters):
             # Fail closed: without the values, any of this text could hold one.
             return [UNCHECKED_TEXT if text else text for text in texts]
         return [mask_secrets(text, forms) for text in texts]
-
-    def _mask_imported_job(self, job: Job) -> None:
-        """Mask what the extended metadata step saved, since it ran where the secrets are not known."""
-        if self.get_secret_forms() == []:
-            return
-        job.tool_stdout, job.tool_stderr = self._mask_secrets(job.tool_stdout, job.tool_stderr)
-        if job.job_messages:
-            masked_messages = []
-            for job_message in job.job_messages:
-                message = dict(job_message)
-                # The fields that can quote the tool's output.
-                for key in ("desc", "match"):
-                    if isinstance(value := message.get(key), str):
-                        (message[key],) = self._mask_secrets(value)
-                masked_messages.append(cast(AnyJobMessage, message))
-            job.job_messages = masked_messages
-        for dataset_assoc in job.output_datasets + job.output_library_datasets:
-            (dataset_assoc.dataset.info,) = self._mask_secrets(dataset_assoc.dataset.info)
 
     def get_id_tag(self):
         # For compatibility with drmaa, which uses job_id right now, and TaskWrapper
@@ -2091,6 +2075,8 @@ class MinimalJobWrapper(HasResourceParameters):
         if context["stderr"].strip():
             # Ensure white space between entries
             dataset.info = f"{dataset.info.rstrip()}\n{context['stderr'].strip()}"
+        # galaxy.json can set info, stdout and stderr per output, past the masked job streams.
+        (dataset.info,) = self._mask_secrets(dataset.info)
         dataset.tool_version = self.version_string
         self.__update_output(job, dataset)
         if not purged:
@@ -2265,7 +2251,10 @@ class MinimalJobWrapper(HasResourceParameters):
         job_context = ExpressionContext(dict(stdout=tool_stdout, stderr=tool_stderr))
         if extended_metadata:
             try:
-                import_options = store.ImportOptions(allow_dataset_object_edit=True, allow_edit=True)
+                # Masked as the import writes it: the import commits, so masking afterwards would be too late.
+                import_options = store.ImportOptions(
+                    allow_dataset_object_edit=True, allow_edit=True, mask_text=lambda text: self._mask_secrets(text)[0]
+                )
                 import_model_store = store.get_import_model_store_for_directory(
                     os.path.join(self.working_directory, "metadata", "outputs_populated"),
                     app=self.app,
@@ -2274,7 +2263,6 @@ class MinimalJobWrapper(HasResourceParameters):
                     tag_handler=self.app.tag_handler.create_tag_handler_session(job.galaxy_session),
                 )
                 object_import_tracker = import_model_store.perform_import(history=job.history, job=job)
-                self._mask_imported_job(job)
                 # The import leaves job.state untouched so nothing polling the job can see it finish before
                 # exec_after_process and the final commit below have run.
                 if object_import_tracker.job_states_by_id.get(job.id) == job.states.ERROR:
@@ -2511,12 +2499,14 @@ class MinimalJobWrapper(HasResourceParameters):
         )
 
     def check_tool_output(self, tool_stdout, tool_stderr, tool_exit_code, job, job_stdout=None, job_stderr=None):
-        tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
-            tool_stdout, tool_stderr, job_stdout, job_stderr
-        )
         state, tool_stdout, tool_stderr, job_messages = check_output(
             self.tool.stdio_regexes, self.tool.stdio_exit_codes, tool_stdout, tool_stderr, tool_exit_code
         )
+        # Masked after the check, so the tool's error patterns still see what it printed.
+        tool_stdout, tool_stderr, job_stdout, job_stderr = self._mask_secrets(
+            tool_stdout, tool_stderr, job_stdout, job_stderr
+        )
+        job_messages = mask_job_messages(job_messages, lambda text: self._mask_secrets(text)[0])
 
         # Store the modified stdout and stderr in the job:
         if job is not None:
@@ -3166,8 +3156,7 @@ class TaskWrapper(JobWrapper):
         else:
             task.state = task.states.ERROR
 
-        # Save stdout and stderr
-        task.set_streams(stdout, stderr)
+        # check_tool_output has saved the masked stdout and stderr.
         self._collect_metrics(task)
         task.exit_code = tool_exit_code
         task.command_line = self.command_line

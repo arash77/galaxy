@@ -132,6 +132,15 @@ class TestTaskWrapper(AbstractTestCases.BaseWrapperTestCase):
     def _wrapper(self):
         return TaskWrapper(self.task, self.queue)
 
+    def test_finish_keeps_the_masked_streams(self):
+        wrapper = self._wrapper()
+        with (
+            mock.patch("galaxy.jobs.job_secret_values", return_value=["s3cret-token"]),
+            mock.patch.object(wrapper, "_collect_metrics"),
+        ):
+            wrapper.finish("token: s3cret-token", "", 0)
+        assert self.task.tool_stdout == "token: ***"
+
 
 class MockEvaluator:
     def __init__(self, app, tool, job, local_working_directory):

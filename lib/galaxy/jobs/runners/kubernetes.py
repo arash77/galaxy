@@ -1135,7 +1135,7 @@ class KubernetesJobRunner(AsynchronousJobRunner[AsynchronousJobState]):
         tool_stdout = "Galaxy issue: stdout could not be retrieved from the job working directory."
         if os.path.exists(tool_stdout_path):
             with open(tool_stdout_path, "rb") as stdout_file:
-                tool_stdout = self._job_io_for_db(stdout_file)
+                tool_stdout = self._job_io_for_db(stdout_file, job_state.job_wrapper)
         else:
             # Legacy job, were getting a merged output - assume it is mostly tool output.
             tool_stdout = job_stdout
@@ -1143,7 +1143,7 @@ class KubernetesJobRunner(AsynchronousJobRunner[AsynchronousJobState]):
 
         if os.path.exists(tool_stderr_path):
             with open(tool_stderr_path, "rb") as stdout_file:
-                tool_stderr = self._job_io_for_db(stdout_file)
+                tool_stderr = self._job_io_for_db(stdout_file, job_state.job_wrapper)
         else:
             # Legacy job, were getting a merged output - assume it is mostly tool output.
             tool_stderr = job_stderr

@@ -74,6 +74,9 @@ class MockJobWrapper:
     def check_tool_output(*args, **kwds):
         return "ok"
 
+    def get_secret_forms(self):
+        return []
+
     def wait_for_external_id(self):
         """Wait until a runner records an external id."""
         external_id = None

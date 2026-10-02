@@ -101,6 +101,7 @@ from galaxy.schema.bco.util import (
 from galaxy.schema.schema import ModelStoreFormat
 from galaxy.schema.states import DatasetState
 from galaxy.security.idencoding import IdEncodingHelper
+from galaxy.tool_util.output_checker import mask_job_messages
 from galaxy.util import (
     FILENAME_VALID_CHARS,
     in_directory,
@@ -218,6 +219,8 @@ class ImportOptions:
     allow_library_creation: bool
     allow_dataset_object_edit: bool
     discarded_data: ImportDiscardedDataType
+    # Applied to the text jobs printed and to dataset info before they are saved, e.g. to hide secrets.
+    mask_text: Callable[[str], str | None] | None
 
     def __init__(
         self,
@@ -225,6 +228,7 @@ class ImportOptions:
         allow_library_creation: bool = False,
         allow_dataset_object_edit: bool | None = None,
         discarded_data: ImportDiscardedDataType = DEFAULT_DISCARDED_DATA_TYPE,
+        mask_text: Callable[[str], str | None] | None = None,
     ) -> None:
         self.allow_edit = allow_edit
         self.allow_library_creation = allow_library_creation
@@ -233,6 +237,7 @@ class ImportOptions:
         else:
             self.allow_dataset_object_edit = allow_dataset_object_edit
         self.discarded_data = discarded_data
+        self.mask_text = mask_text
 
 
 class SessionlessContext:
@@ -447,6 +452,10 @@ class ModelImportStore(metaclass=abc.ABCMeta):
 
         datasets_attrs = self.datasets_properties()
         collections_attrs = self.collections_properties()
+        if mask_text := self.import_options.mask_text:
+            for dataset_attrs in datasets_attrs:
+                if isinstance(info := dataset_attrs.get("info"), str):
+                    dataset_attrs["info"] = mask_text(info)
 
         self._import_datasets(object_import_tracker, datasets_attrs, history, new_history, job)
         self._import_dataset_copied_associations(object_import_tracker, datasets_attrs)
@@ -1730,6 +1739,21 @@ class BaseDirectoryImportModelStore(ModelImportStore):
             yield workflow_key, os.path.join(workflows_directory, name)
 
     def _set_job_attributes(self, imported_job: model.Job, job_attrs: dict[str, Any]) -> None:
+        if mask_text := self.import_options.mask_text:
+            job_attrs = dict(job_attrs)
+            for key in (
+                "info",
+                "traceback",
+                "tool_stdout",
+                "tool_stderr",
+                "job_stdout",
+                "job_stderr",
+                "stdout",
+                "stderr",
+            ):
+                if isinstance(value := job_attrs.get(key), str):
+                    job_attrs[key] = mask_text(value)
+            job_attrs["job_messages"] = mask_job_messages(job_attrs.get("job_messages"), mask_text)
         ATTRIBUTES = (
             "info",
             "exit_code",
