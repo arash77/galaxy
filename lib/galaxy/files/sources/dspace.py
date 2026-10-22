@@ -1,6 +1,7 @@
 import json
 import posixpath
 import re
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import (
@@ -10,13 +11,14 @@ from typing import (
 )
 from urllib.parse import urljoin
 
-from pydantic import Field
-from urllib3.exceptions import LocationParseError
+from pydantic import (
+    Field,
+    field_validator,
+)
 from urllib3.util import parse_url
 
 from galaxy.exceptions import (
     AuthenticationRequired,
-    ConfigDoesNotAllowException,
     MessageException,
     ObjectNotFound,
     RequestParameterInvalidException,
@@ -30,7 +32,7 @@ from galaxy.files.models import (
     RemoteFile,
     RemoteFileHash,
 )
-from galaxy.files.uris import validate_non_local
+from galaxy.files.uris import refuse_a_private_address
 from galaxy.util import (
     DEFAULT_SOCKET_TIMEOUT,
     requests,
@@ -42,6 +44,7 @@ from . import BaseFilesSource
 PAGE_SIZE = 100
 CONTENT_BUNDLE = "ORIGINAL"
 MAX_REDIRECTS = 5
+EXAMPLE_API_URL = "https://demo.dspace.org/server/api"
 
 
 class DSpaceFileSourceTemplateConfiguration(BaseFileSourceTemplateConfiguration):
@@ -55,7 +58,7 @@ class DSpaceFileSourceConfiguration(BaseFileSourceConfiguration):
         str,
         Field(
             title="DSpace REST API URL",
-            description="The REST API of a DSpace 7 or newer server, e.g. https://demo.dspace.org/server/api.",
+            description=f"The REST API of a DSpace 7 or newer server, e.g. {EXAMPLE_API_URL}.",
         ),
     ]
     token: Annotated[
@@ -66,6 +69,11 @@ class DSpaceFileSourceConfiguration(BaseFileSourceConfiguration):
         ),
     ] = None
     writable: Literal[False] = False
+
+    @field_validator("token")
+    @classmethod
+    def strip_token(cls, value: str | None) -> str | None:
+        return (value or "").strip() or None
 
 
 class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, DSpaceFileSourceConfiguration]):
@@ -88,15 +96,17 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
         sort_by: str | None = None,
     ) -> tuple[list[AnyRemoteEntry], int]:
         if recursive:
-            raise MessageException("Recursive listing is not supported for DSpace file sources.")
+            raise RequestParameterInvalidException("Recursive listing is not supported for DSpace file sources.")
+        parts = self._split(path)
+        if len(parts) == 2:
+            parts[1] = self._uuid(parts[1], path)
         config = context.config
-        if (config.token or "").strip():
+        if config.token:
             # DSpace quietly treats an expired token as no token, so ask whether it still logs in
             status = self._get_json(config, self._url(config.api_url, "authn/status"), {})
             if not status.get("authenticated"):
                 raise self._token_not_accepted()
         query = query.strip() if query else None
-        parts = self._split(path)
         if not parts:
             endpoint = "core/communities/search/top"
             if query:
@@ -117,7 +127,14 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
             if query:
                 # DSpace matches whole words only; a trailing * also finds partial ones, but breaks words like "a-b"
                 params["query"] = " ".join(f"{word}*" if re.fullmatch(r"\w+", word) else word for word in query.split())
-            items, total = self._objects(config, "discover/search/objects", params, "searchResult", limit, offset)
+            try:
+                items, total = self._objects(config, "discover/search/objects", params, "searchResult", limit, offset)
+            except RequestParameterInvalidException as e:
+                if not query:
+                    raise
+                raise RequestParameterInvalidException(
+                    f'DSpace could not search for {query}. Try it without symbols like ( or ".'
+                ) from e
             return self._directories("items", items), total
         if len(parts) == 2 and parts[0] == "items":
             bitstreams = self._bitstreams(config, parts[1])
@@ -135,8 +152,9 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
         parts = self._split(source_path, maxsplit=2)
         if len(parts) != 3 or parts[0] != "bitstreams":
             raise ObjectNotFound(f"The specified DSpace path is not a file [{source_path}].")
+        bitstream_id = self._uuid(parts[1], source_path)
         config = context.config
-        with self._open_url(config, self._url(config.api_url, f"core/bitstreams/{parts[1]}/content")) as response:
+        with self._open_url(config, self._url(config.api_url, f"core/bitstreams/{bitstream_id}/content")) as response:
             stream_to_path(response, native_path)
 
     def _write_from(
@@ -246,11 +264,13 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
         params: dict[str, str] | None = None,
         accept: str = "application/octet-stream",
     ) -> Iterator[Any]:
-        token = (config.token or "").strip()
+        token = config.token
         try:
             # redirects are followed here, so every address is checked before it is requested
             for _ in range(MAX_REDIRECTS + 1):
-                self._refuse_a_private_address(url)
+                refuse_a_private_address(
+                    url, self._file_sources_config.fetch_url_allowlist or [], self.label, EXAMPLE_API_URL
+                )
                 headers = {"Accept": accept, "User-Agent": "Galaxy DSpace file source"}
                 if token and self._origin(url) == self._origin(config.api_url):
                     headers["Authorization"] = f"Bearer {token}"
@@ -272,11 +292,13 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
                 if response.status_code == 400 and "Authorization" in headers:
                     # DSpace answers 400 to a login token it no longer accepts
                     raise self._token_not_accepted()
+                if response.status_code == 422:
+                    raise RequestParameterInvalidException(f"DSpace could not process the request [{response.url}].")
                 if response.status_code == 404:
                     raise ObjectNotFound(f"DSpace object not found [{response.url}].")
                 if response.status_code in (401, 403):
                     hint = "Check the token of" if token else "It is not public, and there is no token in"
-                    raise MessageException(f"DSpace refused access to {response.url}. {hint} {self.label}.")
+                    raise AuthenticationRequired(f"DSpace refused access to {response.url}. {hint} {self.label}.")
                 response.raise_for_status()
                 response.raw.decode_content = True
                 yield response.raw
@@ -289,32 +311,19 @@ class DSpaceFilesSource(BaseFilesSource[DSpaceFileSourceTemplateConfiguration, D
             "Log in to DSpace again and update the token."
         )
 
-    def _refuse_a_private_address(self, url: str) -> None:
-        # parsed as requests parses it; validate_non_local needs a lowercase scheme and a bare IPv6 host
-        try:
-            parsed = parse_url(url.strip())
-        except LocationParseError:
-            parsed = None
-        if parsed is None or parsed.scheme not in ("http", "https") or not parsed.host:
-            raise MessageException(f"{self.label} needs an api_url like https://demo.dspace.org/server/api.")
-        host = parsed.host.strip("[]")
-        try:
-            validate_non_local(f"{parsed.scheme}://{host}", self._file_sources_config.fetch_url_allowlist or [])
-        except ConfigDoesNotAllowException as e:
-            raise ConfigDoesNotAllowException(
-                f"{self.label} points to {host}, an address on this server's own network. An administrator "
-                "can allow it by adding its IP address to fetch_url_allowlist, which applies to every URL "
-                "Galaxy fetches."
-            ) from e
-        except RequestParameterInvalidException as e:
-            raise MessageException(f"Could not find {host}, the address of {self.label}.") from e
-
     def _origin(self, url: str) -> tuple[str | None, str | None, int | None]:
         parsed = parse_url(url.strip())
         return parsed.scheme, parsed.host, parsed.port
 
     def _url(self, api_url: str, endpoint: str) -> str:
         return f"{api_url.rstrip('/')}/{endpoint}"
+
+    def _uuid(self, value: str, path: str) -> str:
+        # DSpace answers 400 to an id that is not a uuid, the same as to a token it no longer accepts
+        try:
+            return str(uuid.UUID(value))
+        except ValueError as e:
+            raise ObjectNotFound(f"The specified DSpace path has no valid DSpace id [{path}].") from e
 
     def _split(self, path: str, maxsplit: int = -1) -> list[str]:
         path = posixpath.normpath(f"/{path or ''}").strip("/")
